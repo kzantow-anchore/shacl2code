@@ -58,20 +58,42 @@ def varname(*name, public=True):
     return new_name
 
 
-def struct_name(cls):
-    return varname(*cls.clsname) + "Object"
-
-
-def interface_name(cls):
+def struct_name(cls,classes=None):
+    if classes:
+        return
     return varname(*cls.clsname)
 
 
-def class_type_var(cls):
-    return varname(*cls.clsname, public=False) + "Type"
+def interface_name(cls):
+    return "Any" + varname(*cls.clsname)
+
+
+def class_is_subclass(parent,cls,classes):
+    for id in cls.parent_ids:
+        if parent._id == id:
+            return True
+        if class_is_subclass(parent, classes.get(id), classes):
+            return True
+    return False
+
+
+def has_subclass(cls,classes):
+    for child in classes:
+        for id in child.parent_ids:
+            if cls._id == id:
+                return True
+    return False
+
+
+def not_enum_type(cls,classes):
+    return has_subclass(cls,classes) or len(cls.properties) > 1 or len(cls.parent_ids) > 0
 
 
 def prop_name(prop):
-    return varname(prop.varname, public=False)
+    if prop_is_list(prop) and not varname(prop.varname).endswith("s"):
+        return varname(prop.varname) + "s"
+
+    return varname(prop.varname)
 
 
 def prop_is_list(prop):
@@ -79,12 +101,9 @@ def prop_is_list(prop):
 
 
 def prop_go_type(prop, classes):
-    if prop.enum_values:
-        return "string"
-
     if prop.class_id:
-        intf = interface_name(classes.get(prop.class_id))
-        return f"Ref[{intf}]"
+        intf = struct_name(classes.get(prop.class_id))
+        return f"ref{intf}"
 
     if prop.datatype == "http://www.w3.org/2001/XMLSchema#string":
         return "string"
@@ -212,22 +231,22 @@ class GoLangRender(JinjaTemplateRender):
 
     FILES = (
         "classes.go",
-        "decode.go",
-        "encode.go",
-        "errorhandler.go",
-        "errors.go",
-        "extensible.go",
-        "linkstate.go",
-        "listproperty.go",
-        "optional.go",
-        "path.go",
-        "property.go",
-        "ref.go",
-        "reflistproperty.go",
-        "refproperty.go",
-        "shaclobject.go",
-        "shaclobjectset.go",
-        "shacltype.go",
+        # "decode.go",
+        # "encode.go",
+        # "errorhandler.go",
+        # "errors.go",
+        # "extensible.go",
+        # "linkstate.go",
+        # "listproperty.go",
+        # "optional.go",
+        # "path.go",
+        # "property.go",
+        # "ref.go",
+        # "reflistproperty.go",
+        # "refproperty.go",
+        # "shaclobject.go",
+        # "shaclobjectset.go",
+        # "shacltype.go",
         "util.go",
         "validator.go",
     )
@@ -266,7 +285,8 @@ class GoLangRender(JinjaTemplateRender):
             "varname": varname,
             "struct_name": struct_name,
             "interface_name": interface_name,
-            "class_type_var": class_type_var,
+            "class_is_subclass": class_is_subclass,
+            "not_enum_type": not_enum_type,
             "prop_name": prop_name,
             "prop_is_list": prop_is_list,
             "prop_go_type": prop_go_type,

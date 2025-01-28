@@ -1,110 +1,112 @@
 //{#
 vim: ft=go
-#}
-//
-// {{ disclaimer }}
+#} {{ disclaimer }}
 //
 // SPDX-License-Identifier: {{ spdx_license }}
 
 package {{ package }}
 
 import (
-    "reflect"
-    "regexp"
-    "strconv"
-    "time"
-
-    "github.com/ncruces/go-strftime"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 )
 
-type Validator[T any] interface {
-    Check(T, string) error
+type ValidationError struct {
+	Path []string
+	Err error
 }
 
-func ValueToString(val any, name string) (string, error) {
-    switch val.(type) {
-    case string:
-        return val.(string), nil
-    case int:
-        return strconv.Itoa(val.(int)), nil
-    case time.Time:
-        t := val.(time.Time)
-        if t.Location() == time.UTC {
-            return strftime.Format(UtcFormatStr, t), nil
-        }
-        return strftime.Format(TzFormatStr, t), nil
-    }
-    return "", &ValidationError{name, "Value is of unsupported type " + reflect.TypeOf(val).Name()}
+func (v ValidationError) String() string {
+	return strings.Join(v.Path, ".") + ": " + v.Err.Error()
 }
 
-
-// ID Validator
-type IDValidator struct {}
-
-func (self IDValidator) Check(val string, name string) error {
-    if ! IsIRI(val) && ! IsBlankNode(val) {
-        return &ValidationError{name, "Must be an IRI or a Blank Node"}
-    }
-    return nil
+func (v ValidationError) Error() string {
+	return v.String()
 }
 
-
-// Regex Validator
-type RegexValidator[T any] struct {
-    Regex string
+func newValidationError(path []string, err error) ValidationError {
+	return ValidationError{
+		Path: path,
+		Err: err,
+	}
 }
 
-func (self RegexValidator[T]) Check(val T, name string) error {
-    s, err := ValueToString(val, name)
-    if err != nil {
-        return err
-    }
-
-    m, err := regexp.MatchString(self.Regex, s)
-    if err != nil {
-        return err
-    }
-    if ! m {
-        return &ValidationError{name, "Value '" + s + "' does not match pattern"}
-    }
-    return nil
+type validator interface {
+	Validate(visited map[any]struct{}, path ...string) []ValidationError
 }
 
-// Integer Min Validator
-type IntegerMinValidator struct {
-    Min int
+func validateInValues(path []string, value string, valid ...string) []ValidationError {
+	if slices.Contains(valid, value) {
+		return nil
+	}
+	return []ValidationError{newValidationError(path, fmt.Errorf("invalid value: '%v', expected: %v", value, valid))}
 }
 
-func (self IntegerMinValidator) Check(val int, name string) error {
-    if val < self.Min {
-        return &ValidationError{name, "Value " + strconv.Itoa(val) + " is less than minimum " + strconv.Itoa(self.Min)}
-    }
-    return nil
-}
+{%- set view_prefix = "as" %}
+{%- set cast_prefix = "cast" %}
+{%- set list_suffix = "List" %}
 
-// Integer Max Validator
-type IntegerMaxValidator struct {
-    Max int
-}
+{% for class in classes %}
 
-func (self IntegerMaxValidator) Check(val int, name string) error {
-    if val > self.Max {
-        return &ValidationError{name, "Value " + strconv.Itoa(val) + " is greater than maximum" + strconv.Itoa(self.Max)}
-    }
-    return nil
-}
+{%- set is_public = not class.is_abstract or class.is_extensible %}
 
-// Enum Validator
-type EnumValidator struct {
-    Values []string
+func (o *{{ struct_name(class) }}) Validate(visited map[any]struct{}, path ...string) []ValidationError {
+	if visited == nil { visited = map[any]struct{}{} }
+	if _, ok := visited[o]; ok {
+		return nil
+	}
+	visited[o] = struct{}{}
+	var errs []ValidationError
+{%- for p in class.parent_ids %}
+	errs = append(errs, o.{{ struct_name(classes.get(p)) }}.Validate(visited, path...)...)
+{% endfor %}
+{% if class.named_individuals|length > 1 and class.properties|length < 2 %}
+	errs = append(errs, validateInValues(path, o.ID,
+{%- for member in class.named_individuals -%}
+{{ struct_name(class) }}_{{ varname(member.varname) }}.ID,
+{%- endfor -%}
+	)...)
+{% endif %}
+{% for prop in class.properties %}
+    {# list structs #}{%- if prop.class_id and prop.enum_values and prop_is_list(prop) %}
+	{%- if prop.min_count is not none and prop.min_count > 0 %}
+	if len(o.{{ prop_name(prop) }}) < {{ prop.min_count }} {
+		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required min count: %v", {{ prop.min_count }})))
+	}
+	{%- endif %}
+	{%- if prop.max_count is not none and prop.max_count > 0 %}
+	if len(o.{{ prop_name(prop) }}) > {{ prop.max_count }} {
+		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required max count: %v", {{ prop.max_count }})))
+	}
+	{%- endif %}
+	for _, v := range o.{{ prop_name(prop) }} {
+		errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}")...)...)
+	}
+    {# structs #}{%- elif prop.class_id and prop.enum_values %}
+	{%- if prop.min_count is not none and prop.min_count > 0 %}
+	if o.{{ prop_name(prop) }}.ID == "" {
+		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required")))
+	}
+	{%- endif %}
+	errs = append(errs, o.{{ prop_name(prop) }}.Validate(visited, append(path, "{{ prop_name(prop) }}")...)...)
+	{# specialized type list #}{%- elif prop.class_id and prop_is_list(prop) %}
+	for i, v := range o.{{ prop_name(prop) }} {
+		if v, ok := v.(validator); ok {
+			errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}", strconv.Itoa(i))...)...)
+		}
+	}
+	{# single instance #}{%- elif prop.class_id %}
+	if v, ok := o.{{ prop_name(prop) }}.(validator); ok {
+		errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}")...)...)
+	}
+	{# primitive list #}{%- elif prop_is_list(prop) %}
+	// TODO: check for required/min/max/etc.
+	{# primitive #}{%- else %}
+	// TODO: check for required
+    {%- endif %}
+{%- endfor %}
+	return errs
 }
-
-func (self EnumValidator) Check(val string, name string) error {
-    for _, v := range self.Values {
-        if val == v {
-            return nil
-        }
-    }
-    return &ValidationError{name, "Value '" + val + "' is not a valid enumerated value" }
-}
-
+{%- endfor %}

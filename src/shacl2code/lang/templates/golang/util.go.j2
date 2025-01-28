@@ -1,29 +1,40 @@
-//{#
+{#
 vim: ft=go
-#}
-//
-// {{ disclaimer }}
+#}// {{ disclaimer }}
 //
 // SPDX-License-Identifier: {{ spdx_license }}
 
 package {{ package }}
 
 import (
-    "strings"
+	"iter"
 )
 
-// IRI Validation
-func IsIRI(iri string) bool {
-    if strings.HasPrefix(iri, "_:") {
-        return false
-    }
-    if strings.Contains(iri, ":") {
-        return true
-    }
-    return false
+func typeIter[T any, E any](values []E, cast func(any) *T) iter.Seq2[E,*T] {
+	if values == nil {
+		return func(yield func(E,*T) bool) {}
+	}
+	return func(yield func(E,*T) bool) {
+		for _, value := range values {
+			v := cast(value)
+			if v != nil {
+				if !yield(value, v) {
+					return
+				}
+			}
+		}
+	}
 }
 
-func IsBlankNode(iri string) bool {
-    return strings.HasPrefix(iri, "_:")
+func remove[T comparable,E ~[]T](slice *E, value T) {
+	if slice == nil {
+		return
+	}
+	s := *slice
+	for i := 0; i < len(*slice); i++ {
+		if s[i] == value {
+			*slice = append(s[0:i], s[:i+1]...)
+			i--
+		}
+	}
 }
-
