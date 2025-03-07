@@ -47,11 +47,10 @@ func validateInValues(path []string, value string, valid ...string) []Validation
 {%- set view_prefix = "as" %}
 {%- set cast_prefix = "cast" %}
 {%- set list_suffix = "List" %}
+{%- set id_field = "ID" %}
 
-{% for class in classes %}
-
+{%- for class in classes %}
 {%- set is_public = not class.is_abstract or class.is_extensible %}
-
 func (o *{{ struct_name(class) }}) Validate(visited map[any]struct{}, path ...string) []ValidationError {
 	if visited == nil { visited = map[any]struct{}{} }
 	if _, ok := visited[o]; ok {
@@ -61,16 +60,17 @@ func (o *{{ struct_name(class) }}) Validate(visited map[any]struct{}, path ...st
 	var errs []ValidationError
 {%- for p in class.parent_ids %}
 	errs = append(errs, o.{{ struct_name(classes.get(p)) }}.Validate(visited, path...)...)
-{% endfor %}
-{% if class.named_individuals|length > 1 and class.properties|length < 2 %}
-	errs = append(errs, validateInValues(path, o.ID,
+{%- endfor %}
+{%- if class.named_individuals|length > 1 and class.properties|length < 2 %}
+	errs = append(errs, validateInValues(path, o.{{ id_field }},
 {%- for member in class.named_individuals -%}
-{{ struct_name(class) }}_{{ varname(member.varname) }}.ID,
+{{ varname(struct_name(class)) }}_{{ varname(member.varname) }}.{{ id_field }},
 {%- endfor -%}
 	)...)
-{% endif %}
-{% for prop in class.properties %}
-    {# list structs #}{%- if prop.class_id and prop.enum_values and prop_is_list(prop) %}
+{%- endif %}
+{%- for prop in class.properties %}
+    {#------ list structs ------#}
+    {%- if prop.class_id and prop.enum_values and prop_is_list(prop) %}
 	{%- if prop.min_count is not none and prop.min_count > 0 %}
 	if len(o.{{ prop_name(prop) }}) < {{ prop.min_count }} {
 		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required min count: %v", {{ prop.min_count }})))
@@ -81,30 +81,53 @@ func (o *{{ struct_name(class) }}) Validate(visited map[any]struct{}, path ...st
 		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required max count: %v", {{ prop.max_count }})))
 	}
 	{%- endif %}
-	for _, v := range o.{{ prop_name(prop) }} {
-		errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}")...)...)
+	for i, v := range o.{{ prop_name(prop) }} {
+		errs = append(errs, validateInValues(append(path, "{{ prop_name(prop) }}", strconv.Itoa(i)), v.{{ id_field }}{% for enum_value in prop.enum_values %}, "{{ enum_value }}"{% endfor %})...)
+		errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}", strconv.Itoa(i))...)...)
 	}
-    {# structs #}{%- elif prop.class_id and prop.enum_values %}
+    {#------ structs ------#}
+    {%- elif prop.class_id and prop.enum_values %}
 	{%- if prop.min_count is not none and prop.min_count > 0 %}
-	if o.{{ prop_name(prop) }}.ID == "" {
+	if o.{{ prop_name(prop) }}.{{ id_field }} == "" {
 		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required")))
 	}
 	{%- endif %}
+	errs = append(errs, validateInValues(append(path, "{{ prop_name(prop) }}"), o.{{ prop_name(prop) }}.{{ id_field }}{% for enum_value in prop.enum_values %}, "{{ enum_value }}"{% endfor %})...)
 	errs = append(errs, o.{{ prop_name(prop) }}.Validate(visited, append(path, "{{ prop_name(prop) }}")...)...)
-	{# specialized type list #}{%- elif prop.class_id and prop_is_list(prop) %}
+	{#------ specialized type list ------#}
+	{%- elif prop.class_id and prop_is_list(prop) %}
 	for i, v := range o.{{ prop_name(prop) }} {
 		if v, ok := v.(validator); ok {
 			errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}", strconv.Itoa(i))...)...)
 		}
 	}
-	{# single instance #}{%- elif prop.class_id %}
+	{#------ single instance ------#}
+	{%- elif prop.class_id %}
 	if v, ok := o.{{ prop_name(prop) }}.(validator); ok {
 		errs = append(errs, v.Validate(visited, append(path, "{{ prop_name(prop) }}")...)...)
 	}
-	{# primitive list #}{%- elif prop_is_list(prop) %}
-	// TODO: check for required/min/max/etc.
-	{# primitive #}{%- else %}
-	// TODO: check for required
+	{#------ primitive list ------#}
+	{%- elif prop_is_list(prop) %}
+	{%- if prop.min_count is not none and prop.min_count > 0 %}
+	if len(o.{{ prop_name(prop) }}) < {{ prop.min_count }} {
+		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required min count: %v", {{ prop.min_count }})))
+	}
+	{%- endif %}
+	{%- if prop.max_count is not none and prop.max_count > 0 %}
+	if len(o.{{ prop_name(prop) }}) > {{ prop.max_count }} {
+		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required max count: %v", {{ prop.max_count }})))
+	}
+	{%- endif %}
+	{%- if prop.enum_values %}
+	// emum_values validate {% for v in prop.enum_values %}{{ v }}{% endfor %}
+	{%- endif %}
+	{#------ primitive ------#}
+	{%- else %}
+	{%- if prop.min_count is not none and prop.min_count > 0 %}
+	if fmt.Sprintf("%v", o.{{ prop_name(prop) }}) == "" {
+		errs = append(errs, newValidationError(append(path, "{{ prop_name(prop) }}"), fmt.Errorf("required")))
+	}
+	{%- endif %}
     {%- endif %}
 {%- endfor %}
 	return errs

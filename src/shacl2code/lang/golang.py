@@ -61,6 +61,8 @@ def varname(*name, public=True):
 def struct_name(cls,classes=None):
     if classes:
         return
+    if cls.named_individuals and not cls.properties and not cls.parent_ids:
+        return varname(*cls.clsname,public=False)
     return varname(*cls.clsname)
 
 
@@ -75,6 +77,61 @@ def class_is_subclass(parent,cls,classes):
         if class_is_subclass(parent, classes.get(id), classes):
             return True
     return False
+
+
+def get_all_aliases(context,classes):
+    out = []
+
+    class ClassRef(object):
+        class_id = ""
+        def __init__( self, class_id ):
+            self.class_id = class_id
+            self.aliases = []
+
+    class MemberAlias(object):
+        member = None
+        alias = ""
+        def __init__( self, member, alias ):
+            self.member = member
+            self.alias = alias
+
+    for cls in classes:
+        for prop in cls.properties:
+            if not prop.class_id:
+                continue
+
+            prop_class = classes.get(prop.class_id)
+            for named_individual in prop_class.named_individuals:
+                compact = context.compact_vocab(named_individual._id, prop.path)
+                if compact == named_individual._id:
+                    continue
+
+                member_aliases = ClassRef(prop_class._id)
+
+                exists = False
+                for i in out:
+                    if i.class_id == prop_class._id:
+                        exists = True
+                        member_aliases = i
+                        break
+
+                if not exists:
+                    out.append(member_aliases)
+                    out.sort(key=lambda x: x.class_id)
+
+                exists = False
+                for a in member_aliases.aliases:
+                    if a.member._id == named_individual._id:
+                        exists=True
+                        break
+
+                if exists:
+                    continue
+
+                member_aliases.aliases.append(MemberAlias(named_individual, compact))
+                member_aliases.aliases.sort(key=lambda x: x.member._id)
+
+    return out
 
 
 def has_subclass(cls,classes):
@@ -286,6 +343,7 @@ class GoLangRender(JinjaTemplateRender):
             "struct_name": struct_name,
             "interface_name": interface_name,
             "class_is_subclass": class_is_subclass,
+            "get_all_aliases": get_all_aliases,
             "not_enum_type": not_enum_type,
             "prop_name": prop_name,
             "prop_is_list": prop_is_list,

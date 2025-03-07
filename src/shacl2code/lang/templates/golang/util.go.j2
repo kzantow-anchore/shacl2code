@@ -25,7 +25,7 @@ func typeIter[T any, E any](values []E, cast func(any) *T) iter.Seq2[E,*T] {
 		}
 	}
 }
-
+{#-
 func remove[T comparable,E ~[]T](slice *E, value T) {
 	if slice == nil {
 		return
@@ -38,3 +38,4 @@ func remove[T comparable,E ~[]T](slice *E, value T) {
 		}
 	}
 }
+#}

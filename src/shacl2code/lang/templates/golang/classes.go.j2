@@ -10,39 +10,45 @@ import (
     "iter"
 	"reflect"
 	"time"
+
+	"github.com/kzantow/go-ld"
 )
 
 {%- set view_prefix = "as" %}
 {%- set cast_prefix = "cast" %}
 {%- set list_suffix = "List" %}
+{%- set id_field = "ID" %}
 
-{%- macro set_id(class,classes,id) -%}
-{%- if class.parent_ids -%}
-{%- for p in class.parent_ids -%}
+{%- macro set_id(cls,classes,id) -%}
+{%- if cls.parent_ids -%}
+{%- for p in cls.parent_ids -%}
 {{ struct_name(classes.get(p)) }}: {{ struct_name(classes.get(p)) }}{
 {{- set_id(classes.get(p),classes,id) -}}
 }
 {%- endfor -%}
 {%- else -%}
-ID:"{{ id }}"
+{{ id_field }}:"{{ id }}"
 {%- endif %}
 {%- endmacro -%}
 
-{% for class in classes %}
-{%- for l in class.comment.splitlines() %}
-{{ ("// " + l).rstrip() }}
-{%- endfor -%}
+{%- macro prop_tag(cls,prop) -%}
+`iri:"{{ prop.path }}" {% if context.compact_vocab(prop.path) != prop.path %} iri-compact:"{{ context.compact_vocab(prop.path) }}"{% endif %}`
+{%- endmacro -%}
 
-{%- set is_public = not class.is_abstract or class.is_extensible %}
-type {{ struct_name(class) }} struct {
-{%- if class.parent_ids %}
-{%- for p in class.parent_ids %}
+{% for cls in classes %}
+{%- for l in cls.comment.splitlines() %}
+{{ ("// " + l).rstrip() }}
+{%- endfor %}
+type {{ struct_name(cls) }} struct {
+    _ ld.Type `iri:"{{ cls._id }}"{% if context.compact_iri(cls._id) != cls._id %} iri-compact:"{{ context.compact_iri(cls._id) }}"{% endif %}`
+{%- if cls.parent_ids %}
+{%- for p in cls.parent_ids %}
     {{ struct_name(classes.get(p)) }}
 {%- endfor %}
 {%- else %}
-	ID string
+	{{ id_field }} string `iri:"@id"{% if cls.id_property %} iri-compact:"{{ cls.id_property }}"{% endif %}`
 {%- endif %}
-{% for prop in class.properties %}
+{% for prop in cls.properties %}
     {%- for l in prop.comment.splitlines() %}
     {{ ("// " + l).rstrip() }}
     {%- endfor %}
@@ -50,61 +56,61 @@ type {{ struct_name(class) }} struct {
 	{%- set propClass = classes.get(prop.class_id) %}
 	{%- if not_enum_type(propClass,classes) %}
 	{#- specialized type list #}{%- if prop_is_list(prop) %}
-	{{ prop_name(prop) }} {{ struct_name(propClass) }}{{ list_suffix }}
+	{{ prop_name(prop) }} {{ struct_name(propClass) }}{{ list_suffix }} {{ prop_tag(cls,prop) }}
 	{#- single instance #}{%- else %}
-	{{ prop_name(prop) }} {{ interface_name(propClass) }}
+	{{ prop_name(prop) }} {{ interface_name(propClass) }} {{ prop_tag(cls,prop) }}
     {%- endif %}
 	{% else %}
     {#- list structs #}{%- if prop_is_list(prop) %}
-	{{ prop_name(prop) }} []{{ struct_name(propClass) }}
+	{{ prop_name(prop) }} []{{ struct_name(propClass) }} {{ prop_tag(cls,prop) }}
     {#- structs #}{%- else %}
-	{{ prop_name(prop) }} {{ struct_name(propClass) }}
+	{{ prop_name(prop) }} {{ struct_name(propClass) }} {{ prop_tag(cls,prop) }}
     {%- endif %}
     {%- endif %}
 	{%- else -%}
 	{#- primitive list #}{%- if prop_is_list(prop) %}
-    {{ prop_name(prop) }} []{{ prop_go_type(prop, classes) }}
+    {{ prop_name(prop) }} []{{ prop_go_type(prop, classes) }} {{ prop_tag(cls,prop) }}
 	{#- primitive #}{%- else %}
-    {{ prop_name(prop) }} {{ prop_go_type(prop, classes) }}
+    {{ prop_name(prop) }} {{ prop_go_type(prop, classes) }} {{ prop_tag(cls,prop) }}
     {%- endif %}
     {%- endif %}
 {%- endfor %}
 }
-{% for member in class.named_individuals %}
+{% for member in cls.named_individuals %}
 {%- for l in member.comment.splitlines() %}
 {{ ("// " + l).rstrip() }}
 {%- endfor %}
-var {{ struct_name(class) }}_{{ varname(member.varname) }} = {{ struct_name(class) }} {
-{{- set_id(class,classes,member._id) -}}
+var {{ varname(struct_name(cls)) }}_{{ varname(member.varname) }} = {{ struct_name(cls) }} {
+{{- set_id(cls,classes,member._id) -}}
 }
 {%- endfor %}
 
-{% if not_enum_type(class,classes) %}
-func {{ cast_prefix }}{{ struct_name(class) }}(o any) *{{ struct_name(class) }} {
-	if o, ok := o.({{ interface_name(class) }}); ok {
-		return o.{{ view_prefix }}{{ struct_name(class) }}()
+{%- if not_enum_type(cls,classes) %}
+func {{ cast_prefix }}{{ struct_name(cls) }}(o any) *{{ struct_name(cls) }} {
+	if o, ok := o.({{ interface_name(cls) }}); ok {
+		return o.{{ view_prefix }}{{ struct_name(cls) }}()
 	}
 	return nil
 }
 
-func (o *{{ struct_name(class) }}) {{ view_prefix }}{{ struct_name(class) }}() *{{ struct_name(class) }} {
+func (o *{{ struct_name(cls) }}) {{ view_prefix }}{{ struct_name(cls) }}() *{{ struct_name(cls) }} {
 	return o
 }
 
-type {{ interface_name(class) }} interface {
-	{%- for p in class.parent_ids %}
+type {{ interface_name(cls) }} interface {
+	{%- for p in cls.parent_ids %}
 	{{ interface_name(classes.get(p)) }}
 	{%- endfor %}
-	{{ view_prefix }}{{ struct_name(class) }}() *{{ struct_name(class) }}
+	{{ view_prefix }}{{ struct_name(cls) }}() *{{ struct_name(cls) }}
 }
 
-type {{ struct_name(class) }}{{ list_suffix }} []{{ interface_name(class) }}
+type {{ struct_name(cls) }}{{ list_suffix }} []{{ interface_name(cls) }}
 
-func (o *{{ struct_name(class) }}{{ list_suffix }}) Append(values ...{{ interface_name(class) }}) { *o = append(*o, values...) }
-func (o *{{ struct_name(class) }}{{ list_suffix }}) Remove(value {{ interface_name(class) }}) { remove(o, value) }
-{% for child in classes %}
-{%- if class == child or class_is_subclass(class,child,classes) %}
-func (o *{{ struct_name(class) }}{{ list_suffix }}) {{ struct_name(child) }}Iter() iter.Seq2[{{ interface_name(class) }},*{{ struct_name(child) }}] { return typeIter(*o, {{ cast_prefix }}{{ struct_name(child) }}) }
+{#-func (o *{{ struct_name(cls) }}{{ list_suffix }}) Append(values ...{{ interface_name(cls) }}) { *o = append(*o, values...) }#}
+{#-func (o *{{ struct_name(cls) }}{{ list_suffix }}) Remove(value {{ interface_name(cls) }}) { remove(o, value) }#}
+{%- for child in classes %}
+{%- if cls == child or class_is_subclass(cls,child,classes) %}
+func (o *{{ struct_name(cls) }}{{ list_suffix }}) {{ struct_name(child) }}Iter() iter.Seq2[{{ interface_name(cls) }},*{{ struct_name(child) }}] { return typeIter(*o, {{ cast_prefix }}{{ struct_name(child) }}) }
 {%- endif %}
 {%- endfor %}
 {%- endif %}{# named individuals #}
@@ -125,19 +131,42 @@ func (o *ExternalIRI) {{ view_prefix }}{{ struct_name(child) }}() *{{ struct_nam
 func {{ cast_prefix }}[T any](value any) *T {
 	var t T
 	switch any(t).(type) {
-	{%- for class in classes %}
-	{%- if not_enum_type(class,classes) %}
-	case {{ struct_name(class) }}:
-		if v, ok := any({{ cast_prefix }}{{ struct_name(class) }}(value)).(*T); ok { return v }
+	{%- for cls in classes %}
+	{%- if not_enum_type(cls,classes) %}
+	case {{ struct_name(cls) }}:
+		if v, ok := any({{ cast_prefix }}{{ struct_name(cls) }}(value)).(*T); ok { return v }
 	{%- endif %}
 	{%- endfor %}
 	}
 	panic("invalid type cast, unknown type: " + reflect.TypeOf(t).String())
 }
 
-func As[T any](value any, f func(v *T)) {
+func As[T any,R any](value any, f func(v *T) R) R {
 	v := {{ cast_prefix }}[T](value)
 	if v != nil {
-		f(v)
+		return f(v)
 	}
+	var r R
+	return r
+}
+
+{#- ------------ register type mapping for serialization -------------- #}
+
+func LDContext() ld.Context {
+	return ld.Context{}.
+		Register("{{ url }}",
+	{%- for url in context.urls %}.
+			{%- for classAliases in get_all_aliases(context,classes) %}
+			{ Type: {{ struct_name(classes.get(classAliases.class_id)) }}{}, Aliases: map[string]string{
+			{%- for alias in classAliases.aliases %}
+				{{ varname(struct_name(classes.get(classAliases.class_id))) }}_{{ varname(alias.member.varname) }}: "{{ alias.alias }}",
+			{%- endfor %}
+			}},
+			{%- endfor %}
+		},
+		{%- for cls in classes %}
+			{{ struct_name(cls) }}{},
+		{%- endfor %}
+		)
+	{%- endfor %}
 }
